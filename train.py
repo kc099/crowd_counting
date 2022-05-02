@@ -1,4 +1,5 @@
 """Main script used to train networks."""
+from operator import mod
 import os
 from typing import Union, Optional, List
 
@@ -6,26 +7,60 @@ import click
 import torch
 import numpy as np
 from matplotlib import pyplot
-
+from torch.utils.data import Dataset
 from data_loader import H5Dataset
 from looper import Looper
 from model import UNet, FCRN_A
 from model_resnet import Resnet_Unet
+from SCAR import SCAR
+import h5py
 
+mall_path = '/media/idt/c9fed8d0-a409-4fac-b88e-61892dc0e35b/objects_counting_dmap/mall/'
+nwpu_path = '/media/idt/c9fed8d0-a409-4fac-b88e-61892dc0e35b/objects_counting_dmap/NWPU/'
+
+def read_h5(path):
+    with h5py.File(path, 'r') as f:
+        images = []
+        labels = []
+        for i in range(len(f['images'])):
+            images.append(f['images'][i])
+            labels.append(f['labels'][i])
+    return images, labels
+
+class CrowdDataset(Dataset):
+    def __init__(self, mall_path, nwpu_path):
+        self.images = []
+        self.labels = []
+        mall_img, mall_lab = read_h5(mall_path)
+        nwpu_images, nwpu_labels = read_h5(nwpu_path)
+        
+        self.images = mall_img+nwpu_images
+        self.labels = mall_lab+nwpu_labels
+        print(len(self.images), len(self.labels))
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, index):
+        image = self.images[index]
+#         print(waveform.shape)
+        label = self.labels[index]
+
+        return torch.tensor(image), torch.tensor(label)
 
 @click.command()
 @click.option('-d', '--dataset_name',
-              type=click.Choice(['cell', 'mall', 'ucsd', 'NWPU']),
+              type=click.Choice(['cell', 'mall', 'ucsd', 'NWPU', 'mnwpu']),
               required=True,
               help='Dataset to train model on (expect proper HDF5 files).')
 @click.option('-n', '--network_architecture',
-              type=click.Choice(['UNet', 'FCRN_A']),
+              type=click.Choice(['UNet', 'FCRN_A', 'Resnet', 'SCAR']),
               required=True,
               help='Model to train.')
-@click.option('-lr', '--learning_rate', default=1e-2,
+@click.option('-lr', '--learning_rate', default=5e-3,
               help='Initial learning rate (lr_scheduler is applied).')
 @click.option('-e', '--epochs', default=150, help='Number of training epochs.')
-@click.option('--batch_size', default=16,
+@click.option('--batch_size', default=32,
               help='Batch size for both training and validation dataloaders.')
 @click.option('-hf', '--horizontal_flip', default=0.0,
               help='The probability of horizontal flip for training dataset.')
@@ -36,6 +71,9 @@ from model_resnet import Resnet_Unet
 @click.option('--convolutions', default=2,
               help='Number of layers in a convolutional block.')
 @click.option('--plot', is_flag=True, help="Generate a live plot.")
+
+
+
 def train(dataset_name: str,
           network_architecture: str,
           learning_rate: float,
@@ -55,11 +93,12 @@ def train(dataset_name: str,
 
     for mode in ['train', 'valid']:
         # expected HDF5 files in dataset_name/(train | valid).h5
-        data_path = os.path.join(dataset_name, f"{mode}.h5")
+        # data_path = os.path.join(dataset_name, f"{mode}.h5")
         # turn on flips only for training dataset
-        dataset[mode] = H5Dataset(data_path,
-                                  horizontal_flip if mode == 'train' else 0,
-                                  vertical_flip if mode == 'train' else 0)
+        # dataset[mode] = H5Dataset(data_path,
+        #                           horizontal_flip if mode == 'train' else 0,
+        #                           vertical_flip if mode == 'train' else 0)
+        dataset[mode] = CrowdDataset(mall_path+mode+'.h5', nwpu_path+mode+'.h5')
         dataloader[mode] = torch.utils.data.DataLoader(dataset[mode],
                                                        batch_size=batch_size)
 
@@ -73,8 +112,9 @@ def train(dataset_name: str,
     # }[network_architecture](input_filters=input_channels,
     #                         filters=unet_filters,
     #                         N=convolutions).to(device)
-    network = Resnet_Unet(resnet_pretrain=True)
-    network = torch.nn.DataParallel(network)
+    # network = Resnet_Unet(resnet_pretrain=True).to(device)
+    network = SCAR().to(device)
+    # network = torch.nn.DataParallel(network)
 
     # initialize loss, optimized and learning rate scheduler
     loss = torch.nn.MSELoss()
